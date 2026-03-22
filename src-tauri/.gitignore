@@ -2,3 +2,56 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-ssr/
+
+# Tauri build outputs
+src-tauri/target/
+
+# Vite cache
+.vite/
+*.local
+
+# Session & Stores (sensible Daten!)
+*.session.json
+session.json
+app-data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment
+.env
+.env.local
+.env.production
+.env.*.local
+
+# TypeScript
+*.tsbuildinfo
+
+# Tauri generated (werden automatisch neu generiert)
+src-tauri/gen/

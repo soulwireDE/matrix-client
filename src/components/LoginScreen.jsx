@@ -2,7 +2,7 @@ import { useState } from 'react'
 import * as sdk from 'matrix-js-sdk'
 import useAppStore from '../store/useAppStore'
 import TitleBar from './TitleBar'
-import { initNotifications } from '../services/notifications'
+import { initNotifications } from '../services/notifications.backup'
 import { attachNotificationListener } from '../services/matrixNotifications'
 import { saveSession } from '../store/sessionStore'
 
