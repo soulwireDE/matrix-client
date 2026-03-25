@@ -12,7 +12,7 @@ export async function initNotifications() {
     if (!permissionGranted) throw new Error('Tauri permission denied')
   } catch (e) {
     // Fallback auf Browser Notifications
-    console.log('Tauri Notifications nicht verfügbar, nutze Browser-Fallback')
+    console.log('Tauri Notifications nicht verfügbar, nutze Browser-Fallback', e)
     useBrowserFallback = true
     if ('Notification' in window) {
       const permission = await Notification.requestPermission()
