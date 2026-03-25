@@ -7,7 +7,6 @@ import { attachNotificationListener } from '../services/matrixNotifications'
 import { initCrypto } from '../services/cryptoInit'
 import { saveSession } from '../store/sessionStore'
 
-
 const inputStyle = {
   width: '100%',
   background: 'var(--dc-bg-1)',
@@ -29,55 +28,59 @@ export default function LoginScreen() {
   const { setMatrixClient, setLoggedIn, setCurrentUser } = useAppStore()
 
   async function handleLogin(e) {
-  e.preventDefault()
-  setError('')
-  setLoading(true)
+    e.preventDefault()
+    setError('')
+    setLoading(true)
 
-  try {
-    let baseUrl = homeserver.trim()
-    if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-      baseUrl = 'https://' + baseUrl
+    try {
+      let baseUrl = homeserver.trim()
+      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+        baseUrl = 'https://' + baseUrl
+      }
+
+      // Schritt 1: Login um deviceId zu bekommen
+      const tempClient = sdk.createClient({ baseUrl })
+      const response = await tempClient.login('m.login.password', {
+        user: username,
+        password: password,
+        initial_device_display_name: 'SoulWire Desktop', // ✅ Gerätename
+      })
+
+      // Schritt 2: Echten Client MIT deviceId erstellen
+      const client = sdk.createClient({
+        baseUrl,
+        accessToken: response.access_token,
+        userId: response.user_id,
+        deviceId: response.device_id,  // ✅ jetzt bekannt → Crypto funktioniert
+      })
+
+      // Schritt 3: Crypto initialisieren
+      await initCrypto(client)
+
+      // Schritt 4: Session speichern
+      await saveSession({
+        baseUrl,
+        accessToken: response.access_token,
+        userId: response.user_id,
+        deviceId: response.device_id,
+      })
+
+      // Schritt 5: App-State setzen und Client starten
+      setMatrixClient(client)
+      setCurrentUser({ userId: response.user_id, displayName: username })
+      setLoggedIn(true)
+
+      client.startClient({ initialSyncLimit: 20 })
+
+      await initNotifications()
+      attachNotificationListener(client)
+
+    } catch (err) {
+      setError(err.message || 'Login fehlgeschlagen')
+    } finally {
+      setLoading(false)
     }
-
-    const client = sdk.createClient({ baseUrl })
-    const response = await client.login('m.login.password', {
-      user: username,
-      password: password,
-    })
-
-    // Client neu erstellen MIT deviceId aus der Login-Response
-    const clientWithDevice = sdk.createClient({
-      baseUrl,
-      accessToken: response.access_token,
-      userId: response.user_id,
-      deviceId: response.device_id,   // ✅ jetzt bekannt
-    })
-
-    await initCrypto(client)
-
-    setMatrixClient(client)
-    setCurrentUser({ userId: response.user_id, displayName: username })
-    setLoggedIn(true)
-
-    client.startClient({ initialSyncLimit: 20 })
-
-
-    await saveSession({
-      baseUrl,
-      accessToken: response.access_token,
-      userId: response.user_id,
-      deviceId: response.device_id,
-    })
-
-    await initNotifications()
-    attachNotificationListener(client)
-
-  } catch (err) {
-    setError(err.message || 'Login fehlgeschlagen')
-  } finally {
-    setLoading(false)
   }
-}
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--dc-bg-1)' }}>
