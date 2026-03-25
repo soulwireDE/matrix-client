@@ -4,6 +4,7 @@ import useAppStore from './store/useAppStore'
 import { loadSession, clearSession } from './store/sessionStore'
 import { initNotifications } from './services/notifications.backup'
 import { attachNotificationListener } from './services/matrixNotifications'
+import { initCrypto } from './services/cryptoInit'
 import LoginScreen from './components/LoginScreen'
 import MainLayout from './components/layout/MainLayout'
 
@@ -22,10 +23,11 @@ export default function App() {
             accessToken: session.accessToken,
             userId: session.userId,
             deviceId: session.deviceId,
+            // pickleKey optional für zusätzliche Sicherheit
           })
 
           await client.whoami()
-
+          await initCrypto(client)
           setMatrixClient(client)
           setCurrentUser({ userId: session.userId })
           setLoggedIn(true)

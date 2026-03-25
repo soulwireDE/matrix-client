@@ -1,6 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import useAppStore from "../../store/useAppStore";
 import ContextMenu from "./ContextMenu";
+import VerificationBanner from '../verification/VerificationBanner'
+import VerificationDialog from '../verification/VerificationDialog'
+import { startVerification, attachVerificationListener, setVerificationRequestHandler } from '../../services/verificationService'
 
 export default function ChatArea() {
     const { matrixClient, activeRoomId, rooms } = useAppStore();
@@ -14,77 +17,146 @@ export default function ChatArea() {
     const [contextMenu, setContextMenu] = useState(null);
     const [replyTo, setReplyTo] = useState(null);
     const [editingId, setEditingId] = useState(null);
-   // const [editText, setEditText] = useState("");
+    const [showVerificationBanner, setShowVerificationBanner] = useState(false)
+    const [verificationRequest, setVerificationRequest] = useState(null)
+    const [dmPartnerId, setDmPartnerId] = useState(null)
+    // const [editText, setEditText] = useState("");
 
     const activeRoom = rooms.find((r) => r.roomId === activeRoomId);
 
-function parseMessages(room) {
-  const timeline = room.getLiveTimeline().getEvents()
-  return timeline
-    .filter(e => {
-      if (e.getType() !== 'm.room.message') return false
-      const relates = e.getContent()['m.relates_to']
-      if (relates?.rel_type === 'm.replace') return false
-      return true
-    })
-    .map(e => {
-      const isRedacted = e.isRedacted()
-      return {
-        id: e.getId(),
-        sender: e.getSender(),
-        body: isRedacted ? null : (e.getContent().body || ''),
-        msgtype: isRedacted ? 'redacted' : (e.getContent().msgtype || 'm.text'),
-        url: e.getContent().url || null,
-        ts: e.getTs(),
-        isRedacted,
-        isPending: e.status === 'sending' || e.status === 'queued',
-      }
-    })
-}
+    function parseMessages(room) {
+        const timeline = room.getLiveTimeline().getEvents();
+        return timeline
+            .filter((e) => {
+                const type = e.getType();
+                // ✅ NEU: encrypted Events auch durchlassen
+                if (type !== "m.room.message" && type !== "m.room.encrypted")
+                    return false;
+                const relates = e.getContent()["m.relates_to"];
+                if (relates?.rel_type === "m.replace") return false;
+                return true;
+            })
+            .map((e) => {
+                const isRedacted = e.isRedacted();
+                // ✅ NEU: War das Event encrypted?
+                const isEncrypted = e.isEncrypted();
+                // ✅ NEU: Wurde es erfolgreich entschlüsselt?
+                const decryptionError = e.decryptionFailureReason;
 
-useEffect(() => {
-  if (!matrixClient || !activeRoomId) {
-    setMessages([])
-    return
+                return {
+                    id: e.getId(),
+                    sender: e.getSender(),
+                    body: isRedacted ? null : e.getContent().body || "",
+                    msgtype: isRedacted
+                        ? "redacted"
+                        : e.getContent().msgtype || "m.text",
+                    url: e.getContent().url || null,
+                    ts: e.getTs(),
+                    isRedacted,
+                    isPending: e.status === "sending" || e.status === "queued",
+                    isEncrypted, // ✅ NEU
+                    decryptionError, // ✅ NEU: null = OK, sonst Fehlermeldung
+                };
+            });
+    }
+
+    useEffect(() => {
+        if (!matrixClient || !activeRoomId) {
+            setMessages([]);
+            return;
+        }
+
+        const room = matrixClient.getRoom(activeRoomId);
+        if (!room) return;
+
+// Prüfen ob DM und noch nicht verifiziert
+const members = room.getMembers()
+const isDM = members.length === 2
+if (isDM) {
+  const partner = members.find(m => m.userId !== matrixClient.getUserId())
+  if (partner) {
+    setDmPartnerId(partner.userId)
+    // Eigene async Funktion
+async function checkVerification() {
+  const crypto = matrixClient.getCrypto()
+  if (!crypto) return
+
+  try {
+    // Prüfen ob User überhaupt Crypto-Devices hat
+    const deviceInfo = await crypto.getUserDeviceInfo([partner.userId])
+    const devices = deviceInfo.get(partner.userId)
+
+    // Keine Devices = Bot oder kein E2EE → kein Banner
+    if (!devices || devices.size === 0) {
+      setShowVerificationBanner(false)
+      return
+    }
+
+    const trustLevel = await crypto.getUserVerificationStatus(partner.userId)
+    setShowVerificationBanner(!trustLevel?.isVerified())
+  } catch (e) {
+    console.warn('Verification check fehlgeschlagen:', e)
+    setShowVerificationBanner(false)
   }
-
-  const room = matrixClient.getRoom(activeRoomId)
-  if (!room) return
-
-  isFirstLoad.current = true
-  setHasMore(true)
-  setMessages(parseMessages(room))
-
-const onTimeline = (event, eventRoom, toStartOfTimeline) => {
-  if (toStartOfTimeline) return
-  if (eventRoom?.roomId !== activeRoomId) return
-  if (event.getType() !== 'm.room.message') return
-
-  // room frisch aus dem Client holen statt Closure
-  const freshRoom = matrixClient.getRoom(activeRoomId)
-  if (!freshRoom) return
-
-  setTimeout(() => {
-    setMessages(parseMessages(freshRoom))
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, 50)
 }
-
-const onRoomRedaction = (event, eventRoom) => {
-  if (eventRoom?.roomId !== activeRoomId) return
-  const freshRoom = matrixClient.getRoom(activeRoomId)
-  if (!freshRoom) return
-  setMessages(parseMessages(freshRoom))
-}
-
-  matrixClient.on('Room.timeline', onTimeline)
-  matrixClient.on('Room.redaction', onRoomRedaction)
-
-  return () => {
-    matrixClient.off('Room.timeline', onTimeline)
-    matrixClient.off('Room.redaction', onRoomRedaction)
+    checkVerification()
   }
-}, [matrixClient, activeRoomId])
+} else {
+  setShowVerificationBanner(false)
+  setDmPartnerId(null)
+}
+
+// Eingehende Verification Requests abfangen
+setVerificationRequestHandler((request) => {
+  setVerificationRequest(request)
+})
+attachVerificationListener(matrixClient)
+
+
+        isFirstLoad.current = true;
+        setHasMore(true);
+        setMessages(parseMessages(room));
+
+        const onTimeline = (event, eventRoom, toStartOfTimeline) => {
+            if (toStartOfTimeline) return;
+            if (eventRoom?.roomId !== activeRoomId) return;
+            if (event.getType() !== "m.room.message") return;
+
+            // room frisch aus dem Client holen statt Closure
+            const freshRoom = matrixClient.getRoom(activeRoomId);
+            if (!freshRoom) return;
+
+            setTimeout(() => {
+                setMessages(parseMessages(freshRoom));
+                bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+            }, 50);
+        };
+
+        const onRoomRedaction = (event, eventRoom) => {
+            if (eventRoom?.roomId !== activeRoomId) return;
+            const freshRoom = matrixClient.getRoom(activeRoomId);
+            if (!freshRoom) return;
+            setMessages(parseMessages(freshRoom));
+        };
+
+        // Nachträglich entschlüsselte Events
+        const onDecrypted = (event) => {
+            if (event.getRoomId() !== activeRoomId) return;
+            const freshRoom = matrixClient.getRoom(activeRoomId);
+            if (!freshRoom) return;
+            setMessages(parseMessages(freshRoom));
+        };
+
+        matrixClient.on("Room.timeline", onTimeline);
+        matrixClient.on("Room.redaction", onRoomRedaction);
+        matrixClient.on("Event.decrypted", onDecrypted);
+
+        return () => {
+            matrixClient.off("Room.timeline", onTimeline);
+            matrixClient.off("Room.redaction", onRoomRedaction);
+            matrixClient.off("Event.decrypted", onDecrypted);
+        };
+    }, [matrixClient, activeRoomId]);
 
     // Scroll beim ersten Load ans Ende
     useEffect(() => {
@@ -134,52 +206,56 @@ const onRoomRedaction = (event, eventRoom) => {
         return () => el.removeEventListener("scroll", handleScroll);
     }, [handleScroll]);
 
-async function sendMessage(e) {
-  e.preventDefault()
-  const text = input.trim()
-  if (!text || !activeRoomId) return
-  setInput('')
+    async function sendMessage(e) {
+        e.preventDefault();
+        const text = input.trim();
+        if (!text || !activeRoomId) return;
+        setInput("");
 
-  try {
-    if (editingId) {
-      await matrixClient.sendMessage(activeRoomId, {
-        msgtype: 'm.text',
-        body: `* ${text}`,
-        'm.new_content': { msgtype: 'm.text', body: text },
-        'm.relates_to': { rel_type: 'm.replace', event_id: editingId },
-      })
-      setEditingId(null)
-     // setEditText('')
-    } else if (replyTo) {
-      await matrixClient.sendMessage(activeRoomId, {
-        msgtype: 'm.text',
-        body: `> <${replyTo.sender}> ${replyTo.body}\n\n${text}`,
-        'm.relates_to': { 'm.in_reply_to': { event_id: replyTo.id } },
-      })
-      setReplyTo(null)
-    } else {
-      await matrixClient.sendTextMessage(activeRoomId, text)
+        try {
+            if (editingId) {
+                await matrixClient.sendMessage(activeRoomId, {
+                    msgtype: "m.text",
+                    body: `* ${text}`,
+                    "m.new_content": { msgtype: "m.text", body: text },
+                    "m.relates_to": {
+                        rel_type: "m.replace",
+                        event_id: editingId,
+                    },
+                });
+                setEditingId(null);
+                // setEditText('')
+            } else if (replyTo) {
+                await matrixClient.sendMessage(activeRoomId, {
+                    msgtype: "m.text",
+                    body: `> <${replyTo.sender}> ${replyTo.body}\n\n${text}`,
+                    "m.relates_to": {
+                        "m.in_reply_to": { event_id: replyTo.id },
+                    },
+                });
+                setReplyTo(null);
+            } else {
+                await matrixClient.sendTextMessage(activeRoomId, text);
+            }
+        } catch (err) {
+            console.error("Send error:", err);
+            setInput(text);
+        }
     }
-  } catch (err) {
-    console.error('Send error:', err)
-    setInput(text)
-  }
-}
 
-
-async function sendReaction(messageId, emoji) {
-  try {
-    await matrixClient.sendEvent(activeRoomId, 'm.reaction', {
-      'm.relates_to': {
-        rel_type: 'm.annotation',
-        event_id: messageId,
-        key: emoji,
-      },
-    })
-  } catch (e) {
-    console.error('Reaction error:', e)
-  }
-}
+    async function sendReaction(messageId, emoji) {
+        try {
+            await matrixClient.sendEvent(activeRoomId, "m.reaction", {
+                "m.relates_to": {
+                    rel_type: "m.annotation",
+                    event_id: messageId,
+                    key: emoji,
+                },
+            });
+        } catch (e) {
+            console.error("Reaction error:", e);
+        }
+    }
 
     // Timestamp-Logik
     function formatTimestamp(ts, prevTs) {
@@ -331,7 +407,26 @@ async function sendReaction(messageId, emoji) {
                     </>
                 )}
             </div>
+{/* Verification Banner für DMs */}
+{showVerificationBanner && dmPartnerId && (
+  <VerificationBanner
+    userId={dmPartnerId}
+    onStartVerification={async () => {
+      const request = await startVerification(matrixClient, dmPartnerId)
+      setVerificationRequest(request)
+      setShowVerificationBanner(false)
+    }}
+    onDismiss={() => setShowVerificationBanner(false)}
+  />
+)}
 
+{/* Verification Dialog */}
+{verificationRequest && (
+  <VerificationDialog
+    request={verificationRequest}
+    onClose={() => setVerificationRequest(null)}
+  />
+)}
             {/* Nachrichten-Liste */}
             <div
                 ref={scrollRef}
@@ -377,8 +472,12 @@ async function sendReaction(messageId, emoji) {
                         <div
                             key={msg.id}
                             onContextMenu={(e) => {
-                                e.preventDefault()
-                                setContextMenu({ x: e.clientX, y: e.clientY, message: { ...msg, roomId: activeRoomId } })
+                                e.preventDefault();
+                                setContextMenu({
+                                    x: e.clientX,
+                                    y: e.clientY,
+                                    message: { ...msg, roomId: activeRoomId },
+                                });
                             }}
                         >
                             {/* Datums-Trennlinie */}
@@ -479,42 +578,88 @@ async function sendReaction(messageId, emoji) {
                                 )}
 
                                 <div style={{ flex: 1, minWidth: 0 }}>
-{!isGrouped && (
-  <div style={{
-    display: 'flex', alignItems: 'baseline',
-    gap: '8px', marginBottom: '2px',
-  }}>
-    <span style={{ color: 'var(--dc-text-1)', fontWeight: 500, fontSize: '14px' }}>
-      {getDisplayName(msg.sender)}
-    </span>
-    <span style={{ color: 'var(--dc-text-muted)', fontSize: '11px' }}>
-      {timeStr}
-    </span>
-  </div>
-)}
-{/* Gelöschte Nachricht */}
-{msg.isRedacted && (
-  <div style={{
-    display: 'inline-flex', alignItems: 'center', gap: '6px',
-    color: 'var(--dc-text-muted)', fontSize: '14px',
-    fontStyle: 'italic',
-    border: '1px solid rgba(255,255,255,0.06)',
-    borderRadius: '4px', padding: '4px 10px',
-  }}>
-    <span style={{ fontSize: '13px' }}>🗑</span>
-    Diese Nachricht wurde gelöscht.
-  </div>
-)}
+                                    {!isGrouped && (
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                alignItems: "baseline",
+                                                gap: "8px",
+                                                marginBottom: "2px",
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    color: "var(--dc-text-1)",
+                                                    fontWeight: 500,
+                                                    fontSize: "14px",
+                                                }}
+                                            >
+                                                {getDisplayName(msg.sender)}
+                                            </span>
+                                            <span
+                                                style={{
+                                                    color: "var(--dc-text-muted)",
+                                                    fontSize: "11px",
+                                                }}
+                                            >
+                                                {timeStr}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {/* Gelöschte Nachricht */}
+                                    {msg.isRedacted && (
+                                        <div
+                                            style={{
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "6px",
+                                                color: "var(--dc-text-muted)",
+                                                fontSize: "14px",
+                                                fontStyle: "italic",
+                                                border: "1px solid rgba(255,255,255,0.06)",
+                                                borderRadius: "4px",
+                                                padding: "4px 10px",
+                                            }}
+                                        >
+                                            <span style={{ fontSize: "13px" }}>
+                                                🗑
+                                            </span>
+                                            Diese Nachricht wurde gelöscht.
+                                        </div>
+                                    )}
 
-{/* Text-Nachricht */}
-{!msg.isRedacted && msg.msgtype === 'm.text' && (
-  <div style={{
-    color: 'var(--dc-text-2)', fontSize: '14px',
-    lineHeight: 1.6, wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-  }}>
-    {msg.body}
-  </div>
-)}
+                                {/* Entschlüsselung fehlgeschlagen */}
+                                {!msg.isRedacted && msg.decryptionError && (
+                                <div style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                    color: 'var(--dc-text-muted)', fontSize: '14px',
+                                    fontStyle: 'italic',
+                                    border: '1px solid rgba(255,165,0,0.3)',
+                                    borderRadius: '4px', padding: '4px 10px',
+                                    background: 'rgba(255,165,0,0.05)',
+                                }}>
+                                    <span>🔐</span>
+                                    Nachricht konnte nicht entschlüsselt werden
+                                </div>
+                                )}
+
+                                {/* Text-Nachricht – jetzt mit Schloss-Icon wenn verschlüsselt */}
+                                {!msg.isRedacted && !msg.decryptionError && msg.msgtype === 'm.text' && (
+                                <div style={{
+                                    color: 'var(--dc-text-2)', fontSize: '14px',
+                                    lineHeight: 1.6, wordBreak: 'break-word', whiteSpace: 'pre-wrap',
+                                }}>
+                                    {msg.isEncrypted && (
+                                    <span
+                                        title="Ende-zu-Ende verschlüsselt"
+                                        style={{ fontSize: '11px', marginRight: '4px', opacity: 0.4 }}
+                                    >
+                                        🔒
+                                    </span>
+                                    )}
+                                    {msg.body}
+                                </div>
+                                )}
 
                                     {/* Bild-Nachricht */}
                                     {msg.msgtype === "m.image" && msg.url && (
@@ -594,46 +739,81 @@ async function sendReaction(messageId, emoji) {
 
             {/* Eingabe */}
             <div style={{ padding: "0 16px 16px", flexShrink: 0 }}>
+                {/* Reply Banner */}
+                {replyTo && (
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            padding: "6px 16px",
+                            background: "var(--dc-bg-4)",
+                            borderRadius: "8px 8px 0 0",
+                            marginBottom: "-4px",
+                            fontSize: "13px",
+                            color: "var(--dc-text-muted)",
+                        }}
+                    >
+                        <span style={{ color: "var(--dc-accent)" }}>
+                            ↩ Antwort an {replyTo.sender.split(":")[0].slice(1)}
+                        </span>
+                        <span
+                            style={{
+                                flex: 1,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {replyTo.body}
+                        </span>
+                        <span
+                            onClick={() => setReplyTo(null)}
+                            style={{
+                                cursor: "pointer",
+                                fontSize: "16px",
+                                flexShrink: 0,
+                            }}
+                        >
+                            ✕
+                        </span>
+                    </div>
+                )}
 
-{/* Reply Banner */}
-{replyTo && (
-  <div style={{
-    display: 'flex', alignItems: 'center', gap: '8px',
-    padding: '6px 16px', background: 'var(--dc-bg-4)',
-    borderRadius: '8px 8px 0 0', marginBottom: '-4px',
-    fontSize: '13px', color: 'var(--dc-text-muted)',
-  }}>
-    <span style={{ color: 'var(--dc-accent)' }}>↩ Antwort an {replyTo.sender.split(':')[0].slice(1)}</span>
-    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-      {replyTo.body}
-    </span>
-    <span
-      onClick={() => setReplyTo(null)}
-      style={{ cursor: 'pointer', fontSize: '16px', flexShrink: 0 }}
-    >✕</span>
-  </div>
-)}
-
-{/* Edit Banner */}
-{editingId && (
-  <div style={{
-    display: 'flex', alignItems: 'center', gap: '8px',
-    padding: '6px 16px', background: 'rgba(88,101,242,0.15)',
-    borderRadius: '8px 8px 0 0', marginBottom: '-4px',
-    fontSize: '13px',
-  }}>
-    <span style={{ color: 'var(--dc-accent)' }}>✏ Nachricht bearbeiten</span>
-    <span style={{ flex: 1 }} />
-    <span
-      onClick={() => { setEditingId(null);
-        //setEditText('');
-        setInput('') }}
-      style={{ cursor: 'pointer', fontSize: '16px', color: 'var(--dc-text-muted)' }}
-    >✕</span>
-  </div>
-)}
-
-
+                {/* Edit Banner */}
+                {editingId && (
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            padding: "6px 16px",
+                            background: "rgba(88,101,242,0.15)",
+                            borderRadius: "8px 8px 0 0",
+                            marginBottom: "-4px",
+                            fontSize: "13px",
+                        }}
+                    >
+                        <span style={{ color: "var(--dc-accent)" }}>
+                            ✏ Nachricht bearbeiten
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        <span
+                            onClick={() => {
+                                setEditingId(null);
+                                //setEditText('');
+                                setInput("");
+                            }}
+                            style={{
+                                cursor: "pointer",
+                                fontSize: "16px",
+                                color: "var(--dc-text-muted)",
+                            }}
+                        >
+                            ✕
+                        </span>
+                    </div>
+                )}
 
                 <form onSubmit={sendMessage} style={{ position: "relative" }}>
                     <input
@@ -681,22 +861,23 @@ async function sendReaction(messageId, emoji) {
                 </form>
             </div>
 
-
             {contextMenu && (
-  <ContextMenu
-    x={contextMenu.x}
-    y={contextMenu.y}
-    message={contextMenu.message}
-    onClose={() => setContextMenu(null)}
-    onReply={() => setReplyTo(contextMenu.message)}
-    onEdit={() => {
-      setEditingId(contextMenu.message.id)
-      //setEditText(contextMenu.message.body)
-      setInput(contextMenu.message.body)
-    }}
-    onReact={(emoji) => sendReaction(contextMenu.message.id, emoji)}
-  />
-)}
+                <ContextMenu
+                    x={contextMenu.x}
+                    y={contextMenu.y}
+                    message={contextMenu.message}
+                    onClose={() => setContextMenu(null)}
+                    onReply={() => setReplyTo(contextMenu.message)}
+                    onEdit={() => {
+                        setEditingId(contextMenu.message.id);
+                        //setEditText(contextMenu.message.body)
+                        setInput(contextMenu.message.body);
+                    }}
+                    onReact={(emoji) =>
+                        sendReaction(contextMenu.message.id, emoji)
+                    }
+                />
+            )}
         </div>
     );
 }

@@ -10,9 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "^18.0.0",
     "@tauri-apps/api": "^2.10.1",
     "lucide-react": "^0.577.0",
     "matrix-js-sdk": "^41.2.0-rc.0",
+    "olm": "^0.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "zustand": "^5.0.12"

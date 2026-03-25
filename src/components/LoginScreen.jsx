@@ -4,7 +4,9 @@ import useAppStore from '../store/useAppStore'
 import TitleBar from './TitleBar'
 import { initNotifications } from '../services/notifications.backup'
 import { attachNotificationListener } from '../services/matrixNotifications'
+import { initCrypto } from '../services/cryptoInit'
 import { saveSession } from '../store/sessionStore'
+
 
 const inputStyle = {
   width: '100%',
@@ -43,11 +45,22 @@ export default function LoginScreen() {
       password: password,
     })
 
+    // Client neu erstellen MIT deviceId aus der Login-Response
+    const clientWithDevice = sdk.createClient({
+      baseUrl,
+      accessToken: response.access_token,
+      userId: response.user_id,
+      deviceId: response.device_id,   // ✅ jetzt bekannt
+    })
+
+    await initCrypto(client)
+
     setMatrixClient(client)
     setCurrentUser({ userId: response.user_id, displayName: username })
     setLoggedIn(true)
 
     client.startClient({ initialSyncLimit: 20 })
+
 
     await saveSession({
       baseUrl,
