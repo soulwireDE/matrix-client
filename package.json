@@ -12,7 +12,10 @@
   "dependencies": {
     "@matrix-org/matrix-sdk-crypto-wasm": "^18.0.0",
     "@tauri-apps/api": "^2.10.1",
+    "@livekit/components-react": "^2.9.7",
+    "@livekit/components-styles": "^1.2.0",
     "lucide-react": "^0.577.0",
+    "livekit-client": "^2.15.9",
     "matrix-js-sdk": "^41.2.0-rc.0",
     "olm": "^0.0.0",
     "react": "^19.2.4",

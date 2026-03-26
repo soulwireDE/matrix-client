@@ -4,6 +4,10 @@ import ContextMenu from "./ContextMenu";
 import VerificationBanner from '../verification/VerificationBanner'
 import VerificationDialog from '../verification/VerificationDialog'
 import { startVerification, attachVerificationListener, setVerificationRequestHandler } from '../../services/verificationService'
+import JoinCallDialog from '../call/JoinCallDialog'
+import LiveKitCallPanel from '../call/LiveKitCallPanel'
+import { deriveLivekitRoomName, getLivekitCallState, setLivekitCallActive } from '../../services/livekitCalls'
+import { fetchLivekitToken, getLivekitTokenEndpoint } from '../../services/livekitToken'
 
 export default function ChatArea() {
     const { matrixClient, activeRoomId, rooms } = useAppStore();
@@ -20,9 +24,21 @@ export default function ChatArea() {
     const [showVerificationBanner, setShowVerificationBanner] = useState(false)
     const [verificationRequest, setVerificationRequest] = useState(null)
     const [dmPartnerId, setDmPartnerId] = useState(null)
+    const [callState, setCallState] = useState(null) // { active, livekit_url, room_name, ... }
+    const [showJoinCall, setShowJoinCall] = useState(false)
+    const [joinMode, setJoinMode] = useState(null) // 'voice' | 'video'
+    const [livekitConn, setLivekitConn] = useState(null) // { livekitUrl, token }
+    const [callError, setCallError] = useState(null)
     // const [editText, setEditText] = useState("");
 
     const activeRoom = rooms.find((r) => r.roomId === activeRoomId);
+
+    const callActive = !!callState?.active
+    const inCall = !!(joinMode && livekitConn?.token && livekitConn?.livekitUrl)
+
+    function getDefaultLivekitUrl() {
+        return import.meta.env?.VITE_LIVEKIT_URL || import.meta.env?.VITE_LIVEKIT_WS_URL || null
+    }
 
     function parseMessages(room) {
         const timeline = room.getLiveTimeline().getEvents();
@@ -63,11 +79,23 @@ export default function ChatArea() {
     useEffect(() => {
         if (!matrixClient || !activeRoomId) {
             setMessages([]);
+            setCallState(null)
+            setLivekitConn(null)
+            setJoinMode(null)
+            setCallError(null)
             return;
         }
 
         const room = matrixClient.getRoom(activeRoomId);
         if (!room) return;
+
+        // Call-State initial lesen
+        try {
+            const st = getLivekitCallState(room)?.content || null
+            setCallState(st)
+        } catch {
+            setCallState(null)
+        }
 
 // Prüfen ob DM und noch nicht verifiziert
 const members = room.getMembers()
@@ -151,12 +179,94 @@ attachVerificationListener(matrixClient)
         matrixClient.on("Room.redaction", onRoomRedaction);
         matrixClient.on("Event.decrypted", onDecrypted);
 
+        const onRoomStateEvent = (event, state) => {
+            const roomId = state?.roomId || event?.getRoomId?.()
+            if (roomId !== activeRoomId) return
+            if (event?.getType?.() !== 'com.matrixclient.livekit.call') return
+            const content = event.getContent?.() || null
+            setCallState(content)
+        }
+        matrixClient.on('RoomState.events', onRoomStateEvent)
+
         return () => {
             matrixClient.off("Room.timeline", onTimeline);
             matrixClient.off("Room.redaction", onRoomRedaction);
             matrixClient.off("Event.decrypted", onDecrypted);
+            matrixClient.off('RoomState.events', onRoomStateEvent)
         };
     }, [matrixClient, activeRoomId]);
+
+    // Wenn Call im Raum deaktiviert wird, lokale UI zurücksetzen
+    useEffect(() => {
+        if (!callActive && inCall) {
+            setLivekitConn(null)
+            setJoinMode(null)
+        }
+        if (!callActive) setCallError(null)
+    }, [callActive]);
+
+    async function startRoomCall() {
+        if (!matrixClient || !activeRoomId) return
+        setCallError(null)
+
+        const livekitUrl = getDefaultLivekitUrl()
+        if (!livekitUrl) {
+            window.alert('Bitte setze VITE_LIVEKIT_URL (oder VITE_LIVEKIT_WS_URL) in deiner Vite/Tauri Umgebung.')
+            return
+        }
+
+        const roomName = deriveLivekitRoomName(activeRoomId)
+        try {
+            await setLivekitCallActive(matrixClient, activeRoomId, { active: true, livekitUrl, roomName })
+        } catch (e) {
+            console.error('startRoomCall failed:', e)
+            setCallError(e?.message || 'Call konnte nicht gestartet werden')
+        }
+    }
+
+    async function endRoomCall() {
+        if (!matrixClient || !activeRoomId) return
+        setCallError(null)
+        try {
+            await setLivekitCallActive(matrixClient, activeRoomId, { active: false })
+        } catch (e) {
+            console.error('endRoomCall failed:', e)
+            setCallError(e?.message || 'Call konnte nicht beendet werden')
+        }
+    }
+
+    async function joinRoomCall(mode) {
+        if (!matrixClient || !activeRoomId) return
+        setShowJoinCall(false)
+        setCallError(null)
+
+        try {
+            const endpoint = getLivekitTokenEndpoint()
+            const matrixAccessToken = matrixClient.getAccessToken?.()
+            const matrixBaseUrl =
+                matrixClient.baseUrl ||
+                matrixClient.getHomeserverUrl?.() ||
+                null
+            const data = await fetchLivekitToken({
+                endpoint,
+                matrixAccessToken,
+                matrixRoomId: activeRoomId,
+                matrixBaseUrl,
+            })
+
+            const lkUrl = data?.livekit_url || callState?.livekit_url
+            const token = data?.token
+            if (!lkUrl || !token) throw new Error('Token response missing livekit_url or token')
+
+            setJoinMode(mode)
+            setLivekitConn({ livekitUrl: lkUrl, token })
+        } catch (e) {
+            console.error('joinRoomCall failed:', e)
+            setCallError(e?.message || 'Call beitreten fehlgeschlagen')
+            setLivekitConn(null)
+            setJoinMode(null)
+        }
+    }
 
     // Scroll beim ersten Load ans Ende
     useEffect(() => {
@@ -406,7 +516,85 @@ attachVerificationListener(matrixClient)
                         </span>
                     </>
                 )}
+
+                <div style={{ flex: 1 }} />
+
+                {/* Call Controls */}
+                {activeRoomId && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {callActive ? (
+                            <>
+                                <div style={{
+                                    color: 'var(--dc-green)',
+                                    fontSize: '12px',
+                                    fontWeight: 800,
+                                    opacity: 0.9,
+                                }}>
+                                    ● Call aktiv
+                                </div>
+                                {!inCall && (
+                                    <button
+                                        onClick={() => setShowJoinCall(true)}
+                                        style={callPrimaryBtn}
+                                        title="Call beitreten"
+                                    >
+                                        Join
+                                    </button>
+                                )}
+                                {inCall && (
+                                    <div style={{
+                                        color: 'var(--dc-text-muted)',
+                                        fontSize: '12px',
+                                        fontWeight: 700,
+                                    }}>
+                                        {joinMode === 'video' ? 'Video' : 'Voice'}
+                                    </div>
+                                )}
+                                <button
+                                    onClick={endRoomCall}
+                                    style={callDangerBtn}
+                                    title="Call beenden"
+                                >
+                                    End
+                                </button>
+                            </>
+                        ) : (
+                            <button
+                                onClick={startRoomCall}
+                                style={callPrimaryBtn}
+                                title="Call starten"
+                            >
+                                Call
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
+
+            {callError && (
+                <div style={{
+                    padding: '8px 16px',
+                    background: 'rgba(237,66,69,0.12)',
+                    borderBottom: '1px solid rgba(237,66,69,0.25)',
+                    color: 'var(--dc-text-2)',
+                    fontSize: '13px',
+                }}>
+                    {callError}
+                </div>
+            )}
+
+            {/* LiveKit Call Panel */}
+            {callActive && inCall && (
+                <LiveKitCallPanel
+                    livekitUrl={livekitConn.livekitUrl}
+                    token={livekitConn.token}
+                    joinMode={joinMode}
+                    onLeave={() => {
+                        setLivekitConn(null)
+                        setJoinMode(null)
+                    }}
+                />
+            )}
 {/* Verification Banner für DMs */}
 {showVerificationBanner && dmPartnerId && (
   <VerificationBanner
@@ -878,6 +1066,34 @@ attachVerificationListener(matrixClient)
                     }
                 />
             )}
+
+            <JoinCallDialog
+                open={showJoinCall}
+                onClose={() => setShowJoinCall(false)}
+                onJoin={joinRoomCall}
+            />
         </div>
     );
+}
+
+const callPrimaryBtn = {
+    background: 'var(--dc-accent)',
+    border: 'none',
+    color: '#fff',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontWeight: 800,
+    fontSize: '12px',
+}
+
+const callDangerBtn = {
+    background: 'rgba(237,66,69,0.16)',
+    border: '1px solid rgba(237,66,69,0.35)',
+    color: 'var(--dc-text-1)',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontWeight: 800,
+    fontSize: '12px',
 }
