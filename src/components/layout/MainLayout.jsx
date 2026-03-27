@@ -3,8 +3,11 @@ import ServerSidebar from './ServerSidebar'
 import ChannelSidebar from './ChannelSidebar'
 import ChatArea from '../chat/ChatArea'
 import MemberList from './MemberList'
+import VerificationDialog from '../verification/VerificationDialog'
+import useAppStore from '../../store/useAppStore'
 
 export default function MainLayout() {
+   const { pendingVerification, setPendingVerification } = useAppStore()
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
@@ -17,6 +20,13 @@ export default function MainLayout() {
         <ChatArea />
         <MemberList />
       </div>
+      {pendingVerification && (
+        <VerificationDialog
+          request={pendingVerification}
+          onClose={() => setPendingVerification(null)}
+        />
+      )}
+
     </div>
   )
 }

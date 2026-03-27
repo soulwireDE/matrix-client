@@ -33,6 +33,8 @@ const useAppStore = create((set) => ({
 
   currentUser: null,
   setCurrentUser: (user) => set({ currentUser: user }),
+    pendingVerification: null,
+  setPendingVerification: (request) => set({ pendingVerification: request }),
 }))
 
 export default useAppStore

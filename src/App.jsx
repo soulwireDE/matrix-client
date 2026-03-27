@@ -5,6 +5,7 @@ import { loadSession, clearSession } from './store/sessionStore'
 import { initNotifications } from './services/notifications.backup'
 import { attachNotificationListener } from './services/matrixNotifications'
 import { initCrypto } from './services/cryptoInit'
+import { attachVerificationListener, setVerificationRequestHandler } from './services/verificationService'
 import LoginScreen from './components/LoginScreen'
 import MainLayout from './components/layout/MainLayout'
 
@@ -28,6 +29,14 @@ export default function App() {
 
           await client.whoami()
           await initCrypto(client)
+
+          // Globaler Verification Listener
+          setVerificationRequestHandler((request) => {
+            console.log('📩 Eingehender Verification Request:', request)
+            setPendingVerification(request)
+          })
+          attachVerificationListener(client)
+
           setMatrixClient(client)
           setCurrentUser({ userId: session.userId })
           setLoggedIn(true)
