@@ -40,3 +40,9 @@ body {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--dc-bg-1); border-radius: 2px; }
+
+.lk-control-bar .lk-button-group .lk-device-menu {
+    z-index: 100;
+    position: absolute;
+    background-color: rgba(0,0,0,0.7);
+}
