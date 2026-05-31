@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import useAppStore from "../../store/useAppStore";
 import ContextMenu from "./ContextMenu";
 import VerificationBanner from '../verification/VerificationBanner'
-//import VerificationDialog from '../verification/VerificationDialog'
+import VerificationDialog from '../verification/VerificationDialog'
 import { startVerification, attachVerificationListener, setVerificationRequestHandler } from '../../services/verificationService'
 import JoinCallDialog from '../call/JoinCallDialog'
 import LiveKitCallPanel from '../call/LiveKitCallPanel'
@@ -134,6 +134,12 @@ async function checkVerification() {
   setDmPartnerId(null)
 }
 
+// Eingehende Verification Requests abfangen
+setVerificationRequestHandler((request) => {
+  setVerificationRequest(request)
+})
+attachVerificationListener(matrixClient)
+
 
         isFirstLoad.current = true;
         setHasMore(true);
@@ -229,32 +235,38 @@ async function checkVerification() {
         }
     }
 
-async function joinRoomCall(mode) {
-  if (!matrixClient || !activeRoomId) return
-  setShowJoinCall(false)
-  setCallError(null)
+    async function joinRoomCall(mode) {
+        if (!matrixClient || !activeRoomId) return
+        setShowJoinCall(false)
+        setCallError(null)
 
-  try {
-    const data = await fetchLivekitToken({
-      matrixAccessToken: matrixClient.getAccessToken?.(),
-      matrixRoomId: activeRoomId,
-      matrixUserId: matrixClient.getUserId(),
-    })
+        try {
+            const endpoint = getLivekitTokenEndpoint()
+            const matrixAccessToken = matrixClient.getAccessToken?.()
+            const matrixBaseUrl =
+                matrixClient.baseUrl ||
+                matrixClient.getHomeserverUrl?.() ||
+                null
+            const data = await fetchLivekitToken({
+                endpoint,
+                matrixAccessToken,
+                matrixRoomId: activeRoomId,
+                matrixBaseUrl,
+            })
 
-    const lkUrl = data?.livekit_url
-    const token = data?.token
-    if (!lkUrl || !token) throw new Error('Token Response unvollständig')
+            const lkUrl = data?.livekit_url || callState?.livekit_url
+            const token = data?.token
+            if (!lkUrl || !token) throw new Error('Token response missing livekit_url or token')
 
-    setJoinMode(mode)
-    setLivekitConn({ livekitUrl: lkUrl, token })
-
-  } catch (e) {
-    console.error('joinRoomCall failed:', e)
-    setCallError(e?.message || 'Call beitreten fehlgeschlagen')
-    setLivekitConn(null)
-    setJoinMode(null)
-  }
-}
+            setJoinMode(mode)
+            setLivekitConn({ livekitUrl: lkUrl, token })
+        } catch (e) {
+            console.error('joinRoomCall failed:', e)
+            setCallError(e?.message || 'Call beitreten fehlgeschlagen')
+            setLivekitConn(null)
+            setJoinMode(null)
+        }
+    }
 
     // Scroll beim ersten Load ans Ende
     useEffect(() => {
@@ -571,17 +583,19 @@ async function joinRoomCall(mode) {
                 </div>
             )}
 
-            {/* LiveKit Call Panel */}
+            {/* LiveKit Call Panel (über Chat-Liste, damit Controls klickbar bleiben) */}
             {callActive && inCall && (
-                <LiveKitCallPanel
-                    livekitUrl={livekitConn.livekitUrl}
-                    token={livekitConn.token}
-                    joinMode={joinMode}
-                    onLeave={() => {
-                        setLivekitConn(null)
-                        setJoinMode(null)
-                    }}
-                />
+                <div style={{ position: 'relative', zIndex: 30, flexShrink: 0 }}>
+                    <LiveKitCallPanel
+                        livekitUrl={livekitConn.livekitUrl}
+                        token={livekitConn.token}
+                        joinMode={joinMode}
+                        onLeave={() => {
+                            setLivekitConn(null)
+                            setJoinMode(null)
+                        }}
+                    />
+                </div>
             )}
 {/* Verification Banner für DMs */}
 {showVerificationBanner && dmPartnerId && (
@@ -596,11 +610,17 @@ async function joinRoomCall(mode) {
   />
 )}
 
-
+{/* Verification Dialog */}
+{verificationRequest && (
+  <VerificationDialog
+    request={verificationRequest}
+    onClose={() => setVerificationRequest(null)}
+  />
+)}
             {/* Nachrichten-Liste */}
             <div
                 ref={scrollRef}
-                style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}
+                style={{ flex: 1, overflowY: "auto", padding: "8px 0", position: 'relative', zIndex: 1 }}
             >
                 {/* Ältere laden Indikator */}
                 {loadingOlder && (
